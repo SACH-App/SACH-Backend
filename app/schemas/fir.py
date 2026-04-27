@@ -19,3 +19,6 @@ class FIRResponse(FIRBase):
 
     class Config:
         from_attributes = True
+
+class FIRStatusUpdate(BaseModel):
+    status: FIRStatus

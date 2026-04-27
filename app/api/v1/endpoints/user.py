@@ -108,3 +108,46 @@ async def logout(token: str = Depends(oauth2_scheme)):
     except jwt.PyJWTError:
         # If token is already invalid, just return success
         return {"message": "Successfully logged out"}
+
+import uuid
+from typing import List
+from datetime import datetime, timezone
+from app.models.fir import FIR
+from app.schemas.fir import FIRCreate, FIRResponse
+
+def generate_tracking_number() -> str:
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    unique_id = uuid.uuid4().hex[:6].upper()
+    return f"SACH-{date_str}-{unique_id}"
+
+@router.post("/fir", response_model=FIRResponse, status_code=status.HTTP_201_CREATED)
+async def submit_fir(
+    fir_in: FIRCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Submit a new FIR.
+    """
+    tracking_number = generate_tracking_number()
+    db_fir = FIR(
+        tracking_number=tracking_number,
+        citizen_id=current_user.id,
+        description=fir_in.description
+    )
+    db.add(db_fir)
+    await db.commit()
+    await db.refresh(db_fir)
+    return db_fir
+
+@router.get("/firs", response_model=List[FIRResponse])
+async def get_user_firs(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get all FIRs submitted by the current logged-in user.
+    """
+    result = await db.execute(select(FIR).where(FIR.citizen_id == current_user.id))
+    firs = result.scalars().all()
+    return firs

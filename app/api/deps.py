@@ -54,3 +54,13 @@ async def get_current_active_user(
 ) -> User:
     # Add active/inactive logic here if needed later
     return current_user
+
+async def get_current_officer_user(
+    current_user: User = Depends(get_current_active_user),
+) -> User:
+    if current_user.role not in ["admin", "officer"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges"
+        )
+    return current_user
