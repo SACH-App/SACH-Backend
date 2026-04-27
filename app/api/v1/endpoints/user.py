@@ -12,16 +12,23 @@ from app.schemas.user import UserCreate, UserResponse, Token
 
 router = APIRouter()
 
+from app.services.nadra_service import verify_cnic
+
 @router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     """
     Register a new user.
     """
+    # 1. Verify CNIC against Mock NADRA API (will raise 404 if invalid)
+    # The nadra_service already handles caching and raising HTTPExceptions
+    nadra_data = await verify_cnic(user_in.cnic)
+
+    # 2. Check if user already exists in our database
     result = await db.execute(select(User).where(User.cnic == user_in.cnic))
     if result.scalars().first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A user with this CNIC already exists.",
+            detail="A user with this CNIC already exists in the SACH system.",
         )
     
     hashed_password = get_password_hash(user_in.password)
