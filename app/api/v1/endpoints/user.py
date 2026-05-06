@@ -41,8 +41,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/user/login")
 @router.post("/signup", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     """Register a new citizen. Role is always 'citizen' — cannot be overridden."""
-    # 1. Verify CNIC against Mock NADRA API
-    await nadra_service.verify_cnic(user_in.cnic)
+    # 1. Verify CNIC against Mock NADRA API AND match the name
+    await nadra_service.verify_cnic(user_in.cnic, expected_name=user_in.full_name)
 
     # 2. Check if user already exists
     existing = await user_service.get_user_by_cnic(db, user_in.cnic)

@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.redis import redis_manager
+from app.core.redis import redis_manager, get_redis
 from app.core.logging_config import setup_logging, get_logger
 from app.core.exceptions import (
     validation_exception_handler,
@@ -12,6 +12,7 @@ from app.core.exceptions import (
     generic_exception_handler,
 )
 from app.api.v1.endpoints import verification, admin, user, mobile
+from app.services.nadra_service import init_client, close_client
 
 # Initialize logging
 setup_logging()
@@ -24,8 +25,11 @@ async def lifespan(app: FastAPI):
     logger.info("Starting SACH Backend...")
     await redis_manager.connect()
     logger.info("Redis connected")
+    await init_client()
+    logger.info("NADRA HTTP client ready")
     yield
     # Shutdown
+    await close_client()
     await redis_manager.close()
     logger.info("SACH Backend shut down")
 
@@ -74,4 +78,39 @@ async def root():
         "message": "Welcome to SACH Unified Backend API",
         "version": "2.0.0",
         "docs": "/docs",
+    }
+
+
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """
+    Deep health check — verifies that Redis is reachable and warm.
+    Use this before critical operations to avoid cold-start issues.
+    """
+    redis_status = "disconnected"
+    redis_latency_ms = None
+
+    try:
+        redis_client = get_redis()
+        if redis_client:
+            import time
+            start = time.monotonic()
+            pong = await redis_client.ping()
+            elapsed = (time.monotonic() - start) * 1000  # ms
+            if pong:
+                redis_status = "connected"
+                redis_latency_ms = round(elapsed, 2)
+    except Exception as e:
+        redis_status = f"error: {str(e)}"
+
+    healthy = redis_status == "connected"
+
+    return {
+        "status": "healthy" if healthy else "degraded",
+        "services": {
+            "redis": {
+                "status": redis_status,
+                "latency_ms": redis_latency_ms,
+            }
+        }
     }
