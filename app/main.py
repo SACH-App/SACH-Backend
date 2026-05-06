@@ -1,8 +1,8 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse
 from sqlalchemy.exc import SQLAlchemyError
@@ -46,7 +46,6 @@ app = FastAPI(
 )
 
 # Mount static files
-import os
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
 
 # ── Global Exception Handlers ──
