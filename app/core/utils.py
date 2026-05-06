@@ -1,3 +1,7 @@
+"""
+Utility functions.
+Provides common helpers for generating IDs, tokens, and filenames.
+"""
 import uuid
 from datetime import datetime, timezone
 

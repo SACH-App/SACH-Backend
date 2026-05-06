@@ -6,10 +6,38 @@ from typing import Optional
 
 from app.models.fir import FIR, FIRStatus, FIRCategory, FIRPriority
 from app.models.fir_comment import FIRComment
+from app.models.evidence import Evidence
+from app.schemas.fir import FIRDetailResponse
 from app.core.utils import generate_tracking_number
 from app.core.logging_config import get_logger
+from app.services import user_service
 
 logger = get_logger(__name__)
+
+
+async def build_fir_detail(db: AsyncSession, fir: FIR) -> FIRDetailResponse:
+    """Helper to build a detailed FIR response with comments and evidence."""
+    comments = await get_fir_comments(db, fir.id)
+    result = await db.execute(select(Evidence).where(Evidence.fir_id == fir.id))
+    evidence_list = result.scalars().all()
+
+    response = FIRDetailResponse.model_validate(fir)
+    response.comments = [
+        {
+            "id": c.id, "fir_id": c.fir_id, "user_id": c.user_id,
+            "content": c.content, "created_at": c.created_at,
+            "author_name": (await user_service.get_user_by_id(db, c.user_id)).full_name if c.user_id else None
+        }
+        for c in comments
+    ]
+    response.evidence = evidence_list
+    response.citizen_name = (await user_service.get_user_by_id(db, fir.citizen_id)).full_name if fir.citizen_id else None
+    
+    if fir.assigned_officer_id:
+        officer = await user_service.get_user_by_id(db, fir.assigned_officer_id)
+        response.officer_name = officer.full_name if officer else None
+
+    return response
 
 
 async def create_fir(db: AsyncSession, citizen_id: int, title: str, description: str,

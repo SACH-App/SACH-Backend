@@ -1,4 +1,3 @@
-from math import ceil
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -8,8 +7,7 @@ from app.api.deps import get_current_officer_user, get_current_admin_user
 from app.core.database import get_db
 from app.core.logging_config import get_logger
 from app.models.user import User, UserRole
-from app.models.fir import FIR, FIRStatus, FIRCategory, FIRPriority
-from app.models.evidence import Evidence
+from app.models.fir import FIRStatus, FIRCategory, FIRPriority
 from app.schemas.user import UserResponse, AdminUserUpdate, OfficerCreate
 from app.schemas.fir import (
     FIRResponse, FIRDetailResponse, FIRStatusUpdate, FIRAssignOfficer
@@ -62,13 +60,7 @@ async def get_all_firs(
         status=status_filter, category=category, priority=priority,
         assigned_officer_id=assigned_officer_id, search=search
     )
-    return {
-        "items": firs,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": ceil(total / page_size) if total > 0 else 0,
-    }
+    return PaginatedResponse.create(firs, total, page, page_size)
 
 
 @router.get("/firs/{fir_id}", response_model=FIRDetailResponse)
@@ -82,24 +74,7 @@ async def get_fir_detail(
     if not fir:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FIR not found")
 
-    comments = await fir_service.get_fir_comments(db, fir_id)
-    result = await db.execute(select(Evidence).where(Evidence.fir_id == fir_id))
-    evidence_list = result.scalars().all()
-
-    response = FIRDetailResponse.model_validate(fir)
-    response.comments = [
-        {"id": c.id, "fir_id": c.fir_id, "user_id": c.user_id,
-         "content": c.content, "created_at": c.created_at,
-         "author_name": (await user_service.get_user_by_id(db, c.user_id)).full_name if c.user_id else None}
-        for c in comments
-    ]
-    response.evidence = evidence_list
-    response.citizen_name = (await user_service.get_user_by_id(db, fir.citizen_id)).full_name if fir.citizen_id else None
-    if fir.assigned_officer_id:
-        officer = await user_service.get_user_by_id(db, fir.assigned_officer_id)
-        response.officer_name = officer.full_name if officer else None
-
-    return response
+    return await fir_service.build_fir_detail(db, fir)
 
 
 @router.put("/firs/{fir_id}/status", response_model=FIRResponse)
@@ -207,13 +182,7 @@ async def get_all_users(
     """List all users with pagination and filters (admin only)."""
     offset = (page - 1) * page_size
     users, total = await user_service.get_users_paginated(db, offset, page_size, role=role, search=search)
-    return {
-        "items": users,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": ceil(total / page_size) if total > 0 else 0,
-    }
+    return PaginatedResponse.create(users, total, page, page_size)
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
@@ -301,13 +270,7 @@ async def get_officers(
     """List all officers (admin only)."""
     offset = (page - 1) * page_size
     officers, total = await user_service.get_users_paginated(db, offset, page_size, role=UserRole.officer)
-    return {
-        "items": officers,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": ceil(total / page_size) if total > 0 else 0,
-    }
+    return PaginatedResponse.create(officers, total, page, page_size)
 
 
 # ────────────────────────────────────────────────────────────────────

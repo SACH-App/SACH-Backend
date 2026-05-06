@@ -1,4 +1,9 @@
+"""
+Redis cache management.
+Initializes the Upstash Redis connection used for caching and blacklisting.
+"""
 import redis.asyncio as redis
+from typing import Optional
 from app.core.config import settings
 
 class RedisManager:
@@ -20,6 +25,6 @@ class RedisManager:
 
 redis_manager = RedisManager()
 
-def get_redis() -> redis.Redis:
+def get_redis() -> Optional[redis.Redis]:
     """Dependency to provide a Redis connection."""
     return redis_manager.redis_client

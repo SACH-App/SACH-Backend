@@ -1,6 +1,14 @@
+"""
+Configuration settings for the SACH Backend.
+Loads environment variables from .env file and provides typed access.
+"""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    APP_NAME: str = "SACH Unified Backend"
+    APP_VERSION: str = "2.0.0"
+    DEBUG: bool = False
+
     DATABASE_URL: str
     REDIS_URL: str
     SECRET_KEY: str
