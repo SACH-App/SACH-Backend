@@ -10,3 +10,4 @@ httpx
 PyJWT
 passlib[bcrypt]
 python-multipart
+aiofiles
