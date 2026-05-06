@@ -1,1 +1,3 @@
-# SACH Backend - API Package
+"""
+API routers and dependencies.
+"""

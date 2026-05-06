@@ -1,3 +1,7 @@
+"""
+FastAPI Dependencies.
+Contains reusable dependency injection functions for route authorization and database access.
+"""
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession

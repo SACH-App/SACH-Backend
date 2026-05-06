@@ -21,3 +21,13 @@ __pycache__/
 
 # Alembic
 alembic/versions/*.pyc
+
+# Local files
+test_storage.py
+walkthrough.md
+*.db
+*.sqlite3
+
+# OS Files
+.DS_Store
+Thumbs.db

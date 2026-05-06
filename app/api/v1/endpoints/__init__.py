@@ -1,1 +1,4 @@
-# SACH Backend - API V1 Endpoints Package
+"""
+API Endpoints.
+Contains route definitions mapped to their respective services.
+"""

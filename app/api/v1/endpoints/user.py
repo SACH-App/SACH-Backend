@@ -1,5 +1,4 @@
-from datetime import timedelta
-from math import ceil
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +15,6 @@ from app.core.redis import get_redis
 from app.core.utils import generate_reset_token
 from app.core.logging_config import get_logger
 from app.models.user import User
-from app.models.fir import FIR
 from app.models.evidence import Evidence
 from app.schemas.user import (
     UserCreate, UserResponse, UserUpdate, ChangePassword,
@@ -129,7 +127,6 @@ async def logout(token: str = Depends(oauth2_scheme)):
     payload = decode_token(token)
     if payload:
         exp = payload.get("exp", 0)
-        from datetime import datetime, timezone
         now = datetime.now(timezone.utc).timestamp()
         ttl = int(exp - now)
         if ttl > 0:
@@ -270,13 +267,7 @@ async def get_my_firs(
     """Get all FIRs submitted by the current citizen (paginated)."""
     offset = (page - 1) * page_size
     firs, total = await fir_service.get_citizen_firs(db, current_user.id, offset, page_size)
-    return {
-        "items": firs,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": ceil(total / page_size) if total > 0 else 0,
-    }
+    return PaginatedResponse.create(firs, total, page, page_size)
 
 
 @router.get("/fir/track/{tracking_number}", response_model=FIRResponse)
@@ -301,25 +292,7 @@ async def get_fir_detail(
     if fir.citizen_id != current_user.id and current_user.role == "citizen":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    # Build detailed response
-    comments = await fir_service.get_fir_comments(db, fir_id)
-    result = await db.execute(select(Evidence).where(Evidence.fir_id == fir_id))
-    evidence_list = result.scalars().all()
-
-    response = FIRDetailResponse.model_validate(fir)
-    response.comments = [
-        {"id": c.id, "fir_id": c.fir_id, "user_id": c.user_id,
-         "content": c.content, "created_at": c.created_at,
-         "author_name": (await user_service.get_user_by_id(db, c.user_id)).full_name if c.user_id else None}
-        for c in comments
-    ]
-    response.evidence = evidence_list
-    response.citizen_name = (await user_service.get_user_by_id(db, fir.citizen_id)).full_name if fir.citizen_id else None
-    if fir.assigned_officer_id:
-        officer = await user_service.get_user_by_id(db, fir.assigned_officer_id)
-        response.officer_name = officer.full_name if officer else None
-
-    return response
+    return await fir_service.build_fir_detail(db, fir)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -375,13 +348,7 @@ async def get_notifications(
     notifications, total = await notification_service.get_user_notifications(
         db, current_user.id, offset, page_size
     )
-    return {
-        "items": notifications,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": ceil(total / page_size) if total > 0 else 0,
-    }
+    return PaginatedResponse.create(notifications, total, page, page_size)
 
 
 @router.put("/notifications/{notification_id}/read")

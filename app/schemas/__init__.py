@@ -1,3 +1,7 @@
+"""
+Pydantic schemas package.
+Contains data validation, serialization, and deserialization models.
+"""
 from app.schemas.user import (
     UserCreate, UserResponse, UserUpdate, AdminUserUpdate,
     OfficerCreate, ChangePassword, PasswordResetRequest, PasswordReset,

@@ -1,1 +1,3 @@
-# SACH Backend - API V1 Package
+"""
+API Version 1 package.
+"""

@@ -1,3 +1,7 @@
+"""
+Security utilities.
+Handles password hashing, verification, and JWT generation/validation.
+"""
 import jwt
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext

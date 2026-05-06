@@ -1,3 +1,7 @@
+"""
+Global exception handlers.
+Provides custom exceptions and FastAPI handlers for graceful error responses.
+"""
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError

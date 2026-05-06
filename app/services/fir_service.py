@@ -6,10 +6,63 @@ from typing import Optional
 
 from app.models.fir import FIR, FIRStatus, FIRCategory, FIRPriority
 from app.models.fir_comment import FIRComment
+from app.models.evidence import Evidence
+from app.models.user import User
+from app.schemas.fir import FIRDetailResponse
+from app.schemas.comment import CommentResponse
+from app.schemas.evidence import EvidenceResponse
 from app.core.utils import generate_tracking_number
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+async def build_fir_detail(db: AsyncSession, fir: FIR) -> FIRDetailResponse:
+    """Helper to build a detailed FIR response with comments and evidence."""
+    comments = await get_fir_comments(db, fir.id)
+    result = await db.execute(select(Evidence).where(Evidence.fir_id == fir.id))
+    evidence_list = result.scalars().all()
+
+    # Collect all user IDs needed to prevent N+1 queries
+    user_ids = {fir.citizen_id}
+    if fir.assigned_officer_id:
+        user_ids.add(fir.assigned_officer_id)
+    for c in comments:
+        if c.user_id:
+            user_ids.add(c.user_id)
+            
+    # Fetch all users in one query
+    users_dict = {}
+    if user_ids:
+        user_result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        users_dict = {u.id: u for u in user_result.scalars().all()}
+
+    response = FIRDetailResponse.model_validate(fir)
+    
+    # Construct CommentResponse instances
+    response.comments = [
+        CommentResponse(
+            id=c.id, 
+            fir_id=c.fir_id, 
+            user_id=c.user_id,
+            content=c.content, 
+            created_at=c.created_at,
+            author_name=users_dict[c.user_id].full_name if c.user_id in users_dict else None
+        )
+        for c in comments
+    ]
+    
+    # Construct EvidenceResponse instances
+    response.evidence = [
+        EvidenceResponse.model_validate(e) for e in evidence_list
+    ]
+    
+    response.citizen_name = users_dict[fir.citizen_id].full_name if fir.citizen_id in users_dict else None
+    
+    if fir.assigned_officer_id:
+        response.officer_name = users_dict[fir.assigned_officer_id].full_name if fir.assigned_officer_id in users_dict else None
+
+    return response
 
 
 async def create_fir(db: AsyncSession, citizen_id: int, title: str, description: str,
