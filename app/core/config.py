@@ -13,7 +13,10 @@ class Settings(BaseSettings):
     REDIS_URL: str
     SECRET_KEY: str
     NADRA_API_URL: str
-    NADRA_PARTNER_KEY: str
+    NADRA_USERNAME: str = "partner_user"
+    NADRA_PASSWORD: str = "partner12345"
+
+
     SUPABASE_URL: str
     SUPABASE_SERVICE_KEY: str
 

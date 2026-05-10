@@ -23,10 +23,7 @@ async def init_client() -> None:
     global _http_client
     _http_client = httpx.AsyncClient(
         base_url=settings.NADRA_API_URL,
-        headers={
-            "Authorization": f"Bearer {settings.NADRA_PARTNER_KEY}",
-            "Content-Type": "application/json",
-        },
+        headers={"Content-Type": "application/json"},
         timeout=10.0,
     )
     logger.info("NADRA HTTP client initialized")
@@ -40,64 +37,93 @@ async def close_client() -> None:
         _http_client = None
         logger.info("NADRA HTTP client closed")
 
+async def _get_valid_token() -> str:
+    """Fetch a valid JWT token from Mock NADRA API, caching it in Redis."""
+    redis_client = get_redis()
+    cache_key = "nadra_access_token"
+    
+    # 1. Return cached token if it exists
+    if redis_client:
+        cached_token = await redis_client.get(cache_key)
+        if cached_token:
+            return cached_token
+
+    # 2. Otherwise, fetch a new token
+    client = get_http_client()
+    try:
+        response = await client.post("/auth/login", json={
+            "username": settings.NADRA_USERNAME,
+            "password": settings.NADRA_PASSWORD
+        })
+        response.raise_for_status()
+        token = response.json().get("access_token")
+        
+        # 3. Cache token for 25 minutes (it expires in 30 on NADRA's end)
+        if redis_client and token:
+            await redis_client.setex(cache_key, 1500, token)
+            
+        return token
+    except httpx.HTTPStatusError as e:
+        logger.error(f"NADRA Auth failed: {e.response.text}")
+        raise HTTPException(status_code=502, detail="NADRA API Authentication failed")
+    except Exception as e:
+        logger.error(f"Failed to fetch NADRA token: {e}")
+        raise HTTPException(status_code=503, detail="Could not connect to NADRA API")
+
 
 async def verify_cnic(cnic: str, expected_name: str = None, force_refresh: bool = False) -> dict:
-    """
-    Verifies a CNIC against the external Mock NADRA API.
-
-    Args:
-        cnic: The CNIC to verify.
-        expected_name: If provided, the name returned by NADRA is compared against this.
-                       Raises 400 if they don't match (identity verification).
-        force_refresh: If True, bypasses the Redis cache and fetches fresh data.
-
-    Returns:
-        dict: The NADRA verification data.
-    """
     redis_client = get_redis()
     cache_key = f"nadra_verification:{cnic}"
 
-    # 1. Check Redis Cache (unless force_refresh)
+    # 1. Check Redis Cache
     if redis_client and not force_refresh:
         cached_data = await redis_client.get(cache_key)
         if cached_data:
-            logger.info(f"NADRA cache hit for {cnic}")
             data = json.loads(cached_data)
-            # Still validate name even on cache hit
+            
+            # Check alive status from cache
+            if data.get("is_alive") is False:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Registration denied: NADRA records indicate this citizen is deceased."
+                )
+
             if expected_name:
                 _verify_name_match(data, expected_name, cnic)
             return data
 
-    # 2. Make external HTTP call using the shared client
+    # 2. Get active Bearer token and attach to headers
+    token = await _get_valid_token()
     client = get_http_client()
-    url = f"/verify/{cnic}"
+    
+    # Use /citizens/{cnic} for full partner data
+    url = f"/citizens/{cnic}" 
 
     try:
-        response = await client.get(url)
+        response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         response.raise_for_status()
         data = response.json()
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="CNIC not found in NADRA database"
-            )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="NADRA API error"
-        )
+            raise HTTPException(status_code=404, detail="CNIC not found in NADRA database")
+        raise HTTPException(status_code=502, detail="NADRA API error")
     except httpx.RequestError:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not connect to NADRA API"
-        )
+        raise HTTPException(status_code=503, detail="Could not connect to NADRA API")
 
-    # 3. Cache the successful response for 24 hours (86400 seconds)
+    # 3. Cache the citizen profile response
     if redis_client:
         await redis_client.setex(cache_key, 86400, json.dumps(data))
-        logger.info(f"NADRA data cached for {cnic}")
 
-    # 4. Verify identity — match name against NADRA records
+    # 4. Verify Identity Rules
+    
+    # Check if the citizen is alive
+    if data.get("is_alive") is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration denied: NADRA records indicate this citizen is deceased."
+        )
+
+    # Check if the name matches
     if expected_name:
         _verify_name_match(data, expected_name, cnic)
 
@@ -105,26 +131,15 @@ async def verify_cnic(cnic: str, expected_name: str = None, force_refresh: bool 
 
 
 def _verify_name_match(nadra_data: dict, expected_name: str, cnic: str) -> None:
-    """
-    Compare the name provided by the user against what NADRA has on file.
-    Uses case-insensitive comparison with whitespace normalization.
-    """
-    # NADRA may return name in different field names — try common ones
-    nadra_name = (
-        nadra_data.get("full_name")
-        or nadra_data.get("name")
-        or nadra_data.get("fullName")
-        or ""
-    )
+    # Combine first and last name from Mock NADRA response
+    first_name = nadra_data.get("first_name", "")
+    last_name = nadra_data.get("last_name", "")
+    nadra_name = f"{first_name} {last_name}".strip()
 
-    # Normalize: lowercase, strip, collapse whitespace
     normalize = lambda s: " ".join(s.lower().strip().split())
 
     if normalize(nadra_name) != normalize(expected_name):
-        logger.warning(
-            f"Name mismatch for CNIC {cnic}: "
-            f"expected='{expected_name}', nadra='{nadra_name}'"
-        )
+        logger.warning(f"Name mismatch for CNIC {cnic}: expected='{expected_name}', nadra='{nadra_name}'")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Name does not match NADRA records. Please enter your name exactly as it appears on your CNIC."
