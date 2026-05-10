@@ -1,8 +1,8 @@
-"""expand_models_v2
+"""initial_schema
 
-Revision ID: d7d68ce197e9
-Revises: 9a89a762a577
-Create Date: 2026-05-07 00:35:02.966746
+Revision ID: 640531ae70ee
+Revises: 
+Create Date: 2026-05-10 20:07:43.091369
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'd7d68ce197e9'
-down_revision: Union[str, None] = '9a89a762a577'
+revision: str = '640531ae70ee'
+down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -30,6 +30,29 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_police_stations_id'), 'police_stations', ['id'], unique=False)
+    op.create_table('users',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('cnic', sa.String(length=15), nullable=False),
+    sa.Column('full_name', sa.String(length=100), nullable=False),
+    sa.Column('email', sa.String(length=255), nullable=True),
+    sa.Column('phone', sa.String(length=20), nullable=True),
+    sa.Column('address', sa.String(length=500), nullable=True),
+    sa.Column('profile_picture', sa.String(length=500), nullable=True),
+    sa.Column('role', sa.Enum('citizen', 'admin', 'officer', name='userrole'), nullable=False),
+    sa.Column('password_hash', sa.String(), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('badge_number', sa.String(length=50), nullable=True),
+    sa.Column('rank', sa.String(length=50), nullable=True),
+    sa.Column('station_id', sa.Integer(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.Column('last_login', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['station_id'], ['police_stations.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_users_cnic'), 'users', ['cnic'], unique=True)
+    op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
+    op.create_index(op.f('ix_users_id'), 'users', ['id'], unique=False)
     op.create_table('fcm_tokens',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
@@ -42,6 +65,29 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_fcm_tokens_id'), 'fcm_tokens', ['id'], unique=False)
     op.create_index(op.f('ix_fcm_tokens_user_id'), 'fcm_tokens', ['user_id'], unique=False)
+    op.create_table('firs',
+    sa.Column('id', sa.Integer(), nullable=False),
+    sa.Column('tracking_number', sa.String(length=50), nullable=False),
+    sa.Column('title', sa.String(length=200), nullable=False),
+    sa.Column('description', sa.Text(), nullable=False),
+    sa.Column('citizen_id', sa.Integer(), nullable=False),
+    sa.Column('incident_date', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('incident_location', sa.String(length=500), nullable=True),
+    sa.Column('category', sa.Enum('theft', 'assault', 'fraud', 'cybercrime', 'harassment', 'robbery', 'murder', 'kidnapping', 'domestic_violence', 'other', name='fircategory'), nullable=False),
+    sa.Column('priority', sa.Enum('low', 'medium', 'high', 'critical', name='firpriority'), nullable=False),
+    sa.Column('status', sa.Enum('pending', 'under_investigation', 'resolved', 'closed', name='firstatus'), nullable=False),
+    sa.Column('assigned_officer_id', sa.Integer(), nullable=True),
+    sa.Column('officer_notes', sa.Text(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.ForeignKeyConstraint(['assigned_officer_id'], ['users.id'], ),
+    sa.ForeignKeyConstraint(['citizen_id'], ['users.id'], ),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_firs_assigned_officer_id'), 'firs', ['assigned_officer_id'], unique=False)
+    op.create_index(op.f('ix_firs_id'), 'firs', ['id'], unique=False)
+    op.create_index(op.f('ix_firs_status'), 'firs', ['status'], unique=False)
+    op.create_index(op.f('ix_firs_tracking_number'), 'firs', ['tracking_number'], unique=True)
     op.create_table('notifications',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('user_id', sa.Integer(), nullable=False),
@@ -83,68 +129,11 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_fir_comments_fir_id'), 'fir_comments', ['fir_id'], unique=False)
     op.create_index(op.f('ix_fir_comments_id'), 'fir_comments', ['id'], unique=False)
-    # Create enum types first
-    fircategory = sa.Enum('theft', 'assault', 'fraud', 'cybercrime', 'harassment', 'robbery', 'murder', 'kidnapping', 'domestic_violence', 'other', name='fircategory')
-    fircategory.create(op.get_bind(), checkfirst=True)
-    firpriority = sa.Enum('low', 'medium', 'high', 'critical', name='firpriority')
-    firpriority.create(op.get_bind(), checkfirst=True)
-
-    # Add columns with server_default for existing rows
-    op.add_column('firs', sa.Column('title', sa.String(length=200), nullable=False, server_default='Untitled FIR'))
-    op.add_column('firs', sa.Column('incident_date', sa.DateTime(timezone=True), nullable=True))
-    op.add_column('firs', sa.Column('incident_location', sa.String(length=500), nullable=True))
-    op.add_column('firs', sa.Column('category', fircategory, nullable=False, server_default='other'))
-    op.add_column('firs', sa.Column('priority', firpriority, nullable=False, server_default='medium'))
-    op.add_column('firs', sa.Column('officer_notes', sa.Text(), nullable=True))
-    op.add_column('firs', sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True))
-    op.alter_column('firs', 'description',
-               existing_type=sa.VARCHAR(),
-               type_=sa.Text(),
-               existing_nullable=False)
-    op.create_index(op.f('ix_firs_assigned_officer_id'), 'firs', ['assigned_officer_id'], unique=False)
-    op.create_index(op.f('ix_firs_status'), 'firs', ['status'], unique=False)
-    op.add_column('users', sa.Column('email', sa.String(length=255), nullable=True))
-    op.add_column('users', sa.Column('address', sa.String(length=500), nullable=True))
-    op.add_column('users', sa.Column('profile_picture', sa.String(length=500), nullable=True))
-    op.add_column('users', sa.Column('is_active', sa.Boolean(), nullable=False, server_default=sa.text('true')))
-    op.add_column('users', sa.Column('badge_number', sa.String(length=50), nullable=True))
-    op.add_column('users', sa.Column('rank', sa.String(length=50), nullable=True))
-    op.add_column('users', sa.Column('station_id', sa.Integer(), nullable=True))
-    op.add_column('users', sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True))
-    op.add_column('users', sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True))
-    op.add_column('users', sa.Column('last_login', sa.DateTime(timezone=True), nullable=True))
-    op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
-    op.create_foreign_key(None, 'users', 'police_stations', ['station_id'], ['id'])
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     # ### commands auto generated by Alembic - please adjust! ###
-    op.drop_constraint(None, 'users', type_='foreignkey')
-    op.drop_index(op.f('ix_users_email'), table_name='users')
-    op.drop_column('users', 'last_login')
-    op.drop_column('users', 'updated_at')
-    op.drop_column('users', 'created_at')
-    op.drop_column('users', 'station_id')
-    op.drop_column('users', 'rank')
-    op.drop_column('users', 'badge_number')
-    op.drop_column('users', 'is_active')
-    op.drop_column('users', 'profile_picture')
-    op.drop_column('users', 'address')
-    op.drop_column('users', 'email')
-    op.drop_index(op.f('ix_firs_status'), table_name='firs')
-    op.drop_index(op.f('ix_firs_assigned_officer_id'), table_name='firs')
-    op.alter_column('firs', 'description',
-               existing_type=sa.Text(),
-               type_=sa.VARCHAR(),
-               existing_nullable=False)
-    op.drop_column('firs', 'updated_at')
-    op.drop_column('firs', 'officer_notes')
-    op.drop_column('firs', 'priority')
-    op.drop_column('firs', 'category')
-    op.drop_column('firs', 'incident_location')
-    op.drop_column('firs', 'incident_date')
-    op.drop_column('firs', 'title')
     op.drop_index(op.f('ix_fir_comments_id'), table_name='fir_comments')
     op.drop_index(op.f('ix_fir_comments_fir_id'), table_name='fir_comments')
     op.drop_table('fir_comments')
@@ -154,9 +143,18 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_notifications_user_id'), table_name='notifications')
     op.drop_index(op.f('ix_notifications_id'), table_name='notifications')
     op.drop_table('notifications')
+    op.drop_index(op.f('ix_firs_tracking_number'), table_name='firs')
+    op.drop_index(op.f('ix_firs_status'), table_name='firs')
+    op.drop_index(op.f('ix_firs_id'), table_name='firs')
+    op.drop_index(op.f('ix_firs_assigned_officer_id'), table_name='firs')
+    op.drop_table('firs')
     op.drop_index(op.f('ix_fcm_tokens_user_id'), table_name='fcm_tokens')
     op.drop_index(op.f('ix_fcm_tokens_id'), table_name='fcm_tokens')
     op.drop_table('fcm_tokens')
+    op.drop_index(op.f('ix_users_id'), table_name='users')
+    op.drop_index(op.f('ix_users_email'), table_name='users')
+    op.drop_index(op.f('ix_users_cnic'), table_name='users')
+    op.drop_table('users')
     op.drop_index(op.f('ix_police_stations_id'), table_name='police_stations')
     op.drop_table('police_stations')
     # ### end Alembic commands ###
