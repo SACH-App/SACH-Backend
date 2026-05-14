@@ -8,6 +8,6 @@ pydantic-settings
 redis
 httpx
 PyJWT
-passlib[bcrypt]
+bcrypt
 python-multipart
 aiofiles
