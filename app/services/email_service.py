@@ -16,7 +16,7 @@ def _send_email_sync(to_email: str, subject: str, html_content: str):
     try:
         msg = EmailMessage()
         msg['Subject'] = subject
-        msg['From'] = settings.SMTP_FROM_EMAIL
+        msg['From'] = f"SACH <{settings.SMTP_FROM_EMAIL}>"
         msg['To'] = to_email
         msg.set_content(html_content, subtype='html')
 
