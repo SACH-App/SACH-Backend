@@ -109,3 +109,24 @@ class TokenData(BaseModel):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+
+class OTPRequest(BaseModel):
+    cnic: str = Field(..., max_length=15)
+
+    @field_validator("cnic")
+    @classmethod
+    def validate_cnic(cls, v: str) -> str:
+        if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
+            raise ValueError("CNIC must be in format XXXXX-XXXXXXX-X")
+        return v
+
+class OTPVerify(BaseModel):
+    cnic: str = Field(..., max_length=15)
+    otp: str = Field(..., min_length=6, max_length=6)
+
+    @field_validator("cnic")
+    @classmethod
+    def validate_cnic(cls, v: str) -> str:
+        if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
+            raise ValueError("CNIC must be in format XXXXX-XXXXXXX-X")
+        return v

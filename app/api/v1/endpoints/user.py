@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import random
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +19,8 @@ from app.models.user import User
 from app.models.evidence import Evidence
 from app.schemas.user import (
     UserCreate, UserResponse, UserUpdate, ChangePassword,
-    PasswordResetRequest, PasswordReset, Token, RefreshTokenRequest
+    PasswordResetRequest, PasswordReset, Token, RefreshTokenRequest,
+    OTPRequest, OTPVerify
 )
 from app.schemas.fir import FIRCreate, FIRResponse, FIRDetailResponse
 from app.schemas.evidence import EvidenceResponse
@@ -26,6 +28,7 @@ from app.schemas.notification import NotificationResponse
 from app.schemas.pagination import PaginatedResponse
 from app.services import nadra_service
 from app.services import user_service, fir_service, notification_service, storage_service
+from app.services.email_service import send_otp_email
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -88,6 +91,74 @@ async def login(
             detail="Account is deactivated. Contact admin."
         )
 
+    # Update last login
+    await user_service.update_last_login(db, user)
+
+    access_token = create_access_token(data={"sub": user.cnic})
+    refresh_token = create_refresh_token(data={"sub": user.cnic})
+
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+
+
+@router.post("/login/otp/request")
+async def request_otp(body: OTPRequest, db: AsyncSession = Depends(get_db)):
+    """Request an email OTP for login."""
+    user = await user_service.get_user_by_cnic(db, body.cnic)
+    if not user:
+        return {"message": "If the CNIC is registered, an OTP will be sent to the registered email."}
+        
+    if not user.email:
+        logger.warning(f"OTP requested for CNIC {user.cnic} but no email is on file.")
+        return {"message": "If the CNIC is registered, an OTP will be sent to the registered email."}
+        
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is deactivated. Contact admin."
+        )
+
+    # Generate 6-digit OTP
+    otp_code = str(random.randint(100000, 999999))
+    
+    # Store in Redis (5 min TTL)
+    redis_client = get_redis()
+    if redis_client:
+        await redis_client.setex(f"otp:{user.cnic}", 300, otp_code)
+        
+    # Send Email asynchronously
+    try:
+        await send_otp_email(user.email, otp_code)
+    except Exception as e:
+        logger.error(f"Failed to send OTP to {user.email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send OTP email.")
+        
+    return {"message": "If the CNIC is registered, an OTP will be sent to the registered email."}
+
+
+@router.post("/login/otp/verify", response_model=Token)
+async def verify_otp(body: OTPVerify, db: AsyncSession = Depends(get_db)):
+    """Verify an email OTP and return JWT tokens."""
+    redis_client = get_redis()
+    if not redis_client:
+        raise HTTPException(status_code=503, detail="Service unavailable")
+        
+    stored_otp = await redis_client.get(f"otp:{body.cnic}")
+    if not stored_otp or stored_otp != body.otp:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired OTP."
+        )
+        
+    user = await user_service.get_user_by_cnic(db, body.cnic)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or deactivated."
+        )
+        
+    # Delete OTP to prevent reuse
+    await redis_client.delete(f"otp:{body.cnic}")
+    
     # Update last login
     await user_service.update_last_login(db, user)
 
