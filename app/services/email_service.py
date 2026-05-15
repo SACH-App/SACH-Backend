@@ -1,39 +1,14 @@
-import smtplib
 import asyncio
-from email.message import EmailMessage
+import httpx
 from app.core.config import settings
 from app.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-def _send_email_sync(to_email: str, subject: str, html_content: str):
-    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        logger.warning("SMTP credentials not configured. Email not sent.")
-        # Print OTP to log for local development if email isn't configured
-        logger.info(f"[DEV MODE] Email to {to_email} | Subject: {subject} | Content: {html_content}")
-        return
-
-    try:
-        msg = EmailMessage()
-        msg['Subject'] = subject
-        msg['From'] = f"SACH <{settings.SMTP_FROM_EMAIL}>"
-        msg['To'] = to_email
-        msg.set_content(html_content, subtype='html')
-
-        with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT) as server:
-            server.starttls()
-            server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
-            server.send_message(msg)
-            
-        logger.info(f"Email successfully sent to {to_email}")
-    except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {str(e)}")
-        raise
-
 async def send_otp_email(to_email: str, otp_code: str):
     """
-    Sends a 6-digit OTP to the specified email address using an HTML template.
-    Runs asynchronously using a threadpool to prevent blocking the event loop.
+    Sends a 6-digit OTP to the specified email address using the Resend REST API.
+    This bypasses Render's SMTP block on ports 465/587 by using HTTPS (port 443).
     """
     subject = "Your SACH Citizen Portal Verification Code"
     
@@ -54,6 +29,37 @@ async def send_otp_email(to_email: str, otp_code: str):
       </body>
     </html>
     """
+
+    if not settings.RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY not configured. Email not sent.")
+        logger.info(f"[DEV MODE] Email to {to_email} | Subject: {subject} | Content: {otp_code}")
+        return
+
+    # For testing on Resend without a verified domain, you MUST use onboarding@resend.dev
+    # We will use the custom domain if SMTP_FROM_EMAIL is set, but otherwise default to onboarding
+    from_email = settings.SMTP_FROM_EMAIL if settings.SMTP_FROM_EMAIL and "gmail.com" not in settings.SMTP_FROM_EMAIL else "onboarding@resend.dev"
     
-    # Run the blocking SMTP call in a separate thread
-    await asyncio.to_thread(_send_email_sync, to_email, subject, html_content)
+    headers = {
+        "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "from": f"SACH Citizen Portal <{from_email}>",
+        "to": [to_email],
+        "subject": subject,
+        "html": html_content
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post("https://api.resend.com/emails", json=payload, headers=headers, timeout=10.0)
+            
+            if response.status_code >= 400:
+                logger.error(f"Resend API error: {response.status_code} - {response.text}")
+                response.raise_for_status()
+                
+            logger.info(f"Email successfully sent to {to_email} via Resend")
+    except Exception as e:
+        logger.error(f"Failed to send email to {to_email} via Resend: {str(e)}")
+        raise
