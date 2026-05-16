@@ -26,10 +26,6 @@ class Settings(BaseSettings):
 
     # Email OTP settings
     RESEND_API_KEY: str = ""
-    SMTP_SERVER: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USERNAME: str = ""
-    SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = ""
 
     model_config = SettingsConfigDict(env_file=".env")
