@@ -35,9 +35,8 @@ async def send_otp_email(to_email: str, otp_code: str):
         logger.info(f"[DEV MODE] Email to {to_email} | Subject: {subject} | Content: {otp_code}")
         return
 
-    # For testing on Resend without a verified domain, you MUST use onboarding@resend.dev
-    # We will use the custom domain if SMTP_FROM_EMAIL is set, but otherwise default to onboarding
-    from_email = settings.SMTP_FROM_EMAIL if settings.SMTP_FROM_EMAIL and "gmail.com" not in settings.SMTP_FROM_EMAIL else "onboarding@resend.dev"
+    # Use the verified custom domain for sending emails
+    from_email = settings.SMTP_FROM_EMAIL or "no-reply@sachbackend.live"
     
     headers = {
         "Authorization": f"Bearer {settings.RESEND_API_KEY}",
