@@ -93,7 +93,8 @@ class PasswordResetRequest(BaseModel):
 
 
 class PasswordReset(BaseModel):
-    token: str
+    cnic: str = Field(..., max_length=15)
+    otp: str = Field(..., min_length=6, max_length=6)
     new_password: str = Field(..., min_length=8)
 
 
