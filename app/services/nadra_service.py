@@ -130,6 +130,59 @@ async def verify_cnic(cnic: str, expected_name: str = None, force_refresh: bool 
     return data
 
 
+async def fetch_citizen_address(cnic: str) -> str | None:
+    """
+    Fetch the citizen's address from NADRA's /citizens/{cnic}/addresses endpoint.
+    Prefers PERMANENT address over CURRENT.
+    Returns a formatted address string, or None if unavailable.
+    This is best-effort — failures are logged but do NOT block signup.
+    """
+    try:
+        token = await _get_valid_token()
+        client = get_http_client()
+        response = await client.get(
+            f"/citizens/{cnic}/addresses",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        addresses = data.get("addresses", [])
+        if not addresses:
+            logger.info(f"No addresses returned by NADRA for CNIC {cnic}")
+            return None
+
+        # Prefer PERMANENT address; fall back to CURRENT or whatever is first
+        chosen = None
+        for addr in addresses:
+            if addr.get("address_type", "").upper() == "PERMANENT":
+                chosen = addr
+                break
+        if chosen is None:
+            for addr in addresses:
+                if addr.get("address_type", "").upper() == "CURRENT":
+                    chosen = addr
+                    break
+        if chosen is None:
+            chosen = addresses[0]
+
+        # Build a formatted string from available fields
+        # NADRA response format: street, city, district, province, postal_code
+        parts = [
+            chosen.get("street", ""),
+            chosen.get("city", ""),
+            chosen.get("province", ""),
+            chosen.get("postal_code", ""),
+        ]
+        formatted = ", ".join(p.strip() for p in parts if p and p.strip())
+        logger.info(f"Fetched NADRA address for {cnic}: {formatted}")
+        return formatted or None
+
+    except Exception as e:
+        logger.error(f"Failed to fetch address from NADRA for {cnic}: {e}")
+        return None
+
+
 def _verify_name_match(nadra_data: dict, expected_name: str, cnic: str) -> None:
     # Combine first and last name from Mock NADRA response
     first_name = nadra_data.get("first_name", "")
