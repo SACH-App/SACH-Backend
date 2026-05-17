@@ -26,7 +26,8 @@ async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
 
 
 async def create_citizen(db: AsyncSession, cnic: str, full_name: str, password: str,
-                         phone: str = None, email: str = None) -> User:
+                         phone: str = None, email: str = None,
+                         address: str = None) -> User:
     """Create a new citizen user (role is hardcoded)."""
     hashed = get_password_hash(password)
     user = User(
@@ -34,6 +35,7 @@ async def create_citizen(db: AsyncSession, cnic: str, full_name: str, password: 
         full_name=full_name,
         phone=phone,
         email=email,
+        address=address,
         role=UserRole.citizen,
         password_hash=hashed,
     )

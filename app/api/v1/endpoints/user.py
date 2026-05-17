@@ -61,10 +61,15 @@ async def create_user(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
                 detail="A user with this email already exists.",
             )
 
-    # 4. Create citizen (role is hardcoded in the service)
+    # 4. Fetch address from NADRA (best-effort — won't block signup on failure)
+    address = await nadra_service.fetch_citizen_address(user_in.cnic)
+    logger.info(f"NADRA address for {user_in.cnic}: {address}")
+
+    # 5. Create citizen (role is hardcoded in the service)
     db_user = await user_service.create_citizen(
         db, cnic=user_in.cnic, full_name=user_in.full_name,
-        password=user_in.password, phone=user_in.phone, email=user_in.email
+        password=user_in.password, phone=user_in.phone, email=user_in.email,
+        address=address
     )
     return db_user
 
