@@ -37,9 +37,7 @@ async def build_fir_detail(db: AsyncSession, fir: FIR) -> FIRDetailResponse:
         user_result = await db.execute(select(User).where(User.id.in_(user_ids)))
         users_dict = {u.id: u for u in user_result.scalars().all()}
 
-    from app.schemas.fir import FIRResponse
-    base_response = FIRResponse.model_validate(fir)
-    response = FIRDetailResponse(**base_response.model_dump())
+    response = FIRDetailResponse.model_validate(fir)
     
     # Construct CommentResponse instances
     response.comments = [
