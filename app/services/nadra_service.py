@@ -144,3 +144,43 @@ def _verify_name_match(nadra_data: dict, expected_name: str, cnic: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Name does not match NADRA records. Please enter your name exactly as it appears on your CNIC."
         )
+
+async def get_address(cnic: str) -> str:
+    """Fetch address history from NADRA and return a formatted string of the first available address."""
+    token = await _get_valid_token()
+    client = get_http_client()
+    url = f"/citizens/{cnic}/addresses"
+    
+    try:
+        response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        logger.warning(f"Failed to fetch NADRA address for {cnic}: {e}")
+        return ""
+
+    addresses = data.get("addresses", [])
+    if not addresses:
+        return ""
+
+    # Default to the first available address
+    addr = addresses[0]
+    
+    # If multiple addresses exist, prioritize the PERMANENT one
+    for a in addresses:
+        addr_type = str(a.get("type", a.get("address_type", ""))).upper()
+        if addr_type == "PERMANENT":
+            addr = a
+            break
+    
+    # Format components, skipping empty ones
+    components = [
+        addr.get("street"),
+        addr.get("city"),
+        addr.get("district"),
+        addr.get("province"),
+        addr.get("postal_code")
+    ]
+    
+    formatted_address = ", ".join(filter(None, components))
+    return formatted_address
