@@ -13,7 +13,6 @@ from app.core.security import (
     create_refresh_token, decode_token
 )
 from app.core.redis import get_redis
-from app.core.utils import generate_reset_token
 from app.core.logging_config import get_logger
 from app.models.user import User
 from app.models.evidence import Evidence
@@ -229,46 +228,54 @@ async def change_password(
 
 @router.post("/forgot-password")
 async def forgot_password(body: PasswordResetRequest, db: AsyncSession = Depends(get_db)):
-    """Request a password reset. Generates a token stored in Redis (15 min TTL)."""
+    """Request a password reset OTP. Sends a 6-digit OTP to the user's registered email."""
     user = await user_service.get_user_by_cnic(db, body.cnic)
     if not user:
         # Don't reveal if user exists — always return success
-        return {"message": "If the CNIC is registered, a reset token has been generated."}
+        return {"message": "If the CNIC is registered, a reset OTP will be sent to the registered email."}
 
-    token = generate_reset_token()
+    if not user.email:
+        logger.warning(f"Password reset requested for CNIC {user.cnic} but no email is on file.")
+        return {"message": "If the CNIC is registered, a reset OTP will be sent to the registered email."}
 
-    # Store token in Redis with 15-minute TTL
+    # Generate 6-digit OTP
+    otp_code = str(random.randint(100000, 999999))
+
+    # Store in Redis with 10-minute TTL (separate key from login OTP)
     redis_client = get_redis()
     if redis_client:
-        await redis_client.setex(f"reset:{token}", 900, user.cnic)
+        await redis_client.setex(f"reset_otp:{user.cnic}", 600, otp_code)
 
-    # STUB: Log the token instead of emailing it
-    logger.info(f"[PASSWORD RESET] Token for {user.cnic}: {token}")
-    # TODO: Replace with actual email sending (e.g., Resend, SendGrid)
+    # Send Email via Resend
+    try:
+        await send_otp_email(user.email, otp_code)
+    except Exception as e:
+        logger.error(f"Failed to send password reset OTP to {user.email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send reset OTP email.")
 
-    return {"message": "If the CNIC is registered, a reset token has been generated."}
+    return {"message": "If the CNIC is registered, a reset OTP will be sent to the registered email."}
 
 
 @router.post("/reset-password")
 async def reset_password(body: PasswordReset, db: AsyncSession = Depends(get_db)):
-    """Reset password using a valid reset token."""
+    """Reset password using CNIC + 6-digit OTP."""
     redis_client = get_redis()
     if not redis_client:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable")
 
-    cnic = await redis_client.get(f"reset:{body.token}")
-    if not cnic:
+    stored_otp = await redis_client.get(f"reset_otp:{body.cnic}")
+    if not stored_otp or stored_otp != body.otp:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired reset token"
+            detail="Invalid or expired OTP."
         )
 
-    user = await user_service.get_user_by_cnic(db, cnic)
+    user = await user_service.get_user_by_cnic(db, body.cnic)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     await user_service.change_password(db, user, body.new_password)
-    await redis_client.delete(f"reset:{body.token}")
+    await redis_client.delete(f"reset_otp:{body.cnic}")
 
     return {"message": "Password has been reset successfully"}
 
