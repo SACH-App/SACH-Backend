@@ -335,7 +335,8 @@ async def submit_fir(
         title=fir_in.title, description=fir_in.description,
         incident_date=fir_in.incident_date,
         incident_location=fir_in.incident_location,
-        category=fir_in.category, priority=fir_in.priority
+        category=fir_in.category, priority=fir_in.priority,
+        latitude=fir_in.latitude, longitude=fir_in.longitude
     )
     return fir
 
