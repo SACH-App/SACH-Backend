@@ -14,6 +14,8 @@ class FIRCreate(FIRBase):
     incident_location: Optional[str] = Field(None, max_length=500)
     category: FIRCategory = FIRCategory.other
     priority: FIRPriority = FIRPriority.medium
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
 
 
 class FIRResponse(FIRBase):
@@ -27,6 +29,8 @@ class FIRResponse(FIRBase):
     incident_location: Optional[str] = None
     assigned_officer_id: Optional[int] = None
     officer_notes: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 

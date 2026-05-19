@@ -70,7 +70,8 @@ async def build_fir_detail(db: AsyncSession, fir: FIR) -> FIRDetailResponse:
 async def create_fir(db: AsyncSession, citizen_id: int, title: str, description: str,
                      incident_date: datetime = None, incident_location: str = None,
                      category: FIRCategory = FIRCategory.other,
-                     priority: FIRPriority = FIRPriority.medium) -> FIR:
+                     priority: FIRPriority = FIRPriority.medium,
+                     latitude: float = None, longitude: float = None) -> FIR:
     """Create a new FIR with a unique tracking number."""
     tracking_number = generate_tracking_number()
     fir = FIR(
@@ -82,6 +83,8 @@ async def create_fir(db: AsyncSession, citizen_id: int, title: str, description:
         incident_location=incident_location,
         category=category,
         priority=priority,
+        latitude=latitude,
+        longitude=longitude,
     )
     db.add(fir)
     await db.commit()

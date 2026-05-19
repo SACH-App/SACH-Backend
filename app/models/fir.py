@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, Text
+from sqlalchemy import Column, Integer, String, Enum, ForeignKey, DateTime, Text, Float
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -46,6 +46,8 @@ class FIR(Base):
     incident_location = Column(String(500), nullable=True)
     category = Column(Enum(FIRCategory), default=FIRCategory.other, nullable=False)
     priority = Column(Enum(FIRPriority), default=FIRPriority.medium, nullable=False)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
 
     # Status & Assignment
     status = Column(Enum(FIRStatus), default=FIRStatus.pending, nullable=False, index=True)
