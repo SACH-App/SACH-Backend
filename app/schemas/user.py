@@ -38,6 +38,9 @@ class UserResponse(BaseModel):
     badge_number: Optional[str] = None
     rank: Optional[str] = None
     station_id: Optional[int] = None
+    station_name: Optional[str] = None
+    city: Optional[str] = None
+    district: Optional[str] = None
     created_at: Optional[datetime] = None
 
     class Config:
@@ -129,5 +132,73 @@ class OTPVerify(BaseModel):
     @classmethod
     def validate_cnic(cls, v: str) -> str:
         if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
+            raise ValueError("CNIC must be in format XXXXX-XXXXXXX-X (e.g., 12345-1234567-1)")
+        return v
+
+
+class OfficerSignupRequest(BaseModel):
+    cnic: str = Field(..., max_length=15, description="CNIC in format XXXXX-XXXXXXX-X")
+    full_name: str = Field(..., max_length=100)
+    email: str = Field(..., max_length=255)
+    phone: Optional[str] = Field(None, max_length=20)
+    badge_number: str = Field(..., max_length=50)
+    rank: str = Field(..., max_length=50)
+    city: str = Field(..., max_length=100)
+    district: str = Field(..., max_length=100)
+    station_name: str = Field(..., max_length=200)
+    password: str = Field(..., min_length=8)
+
+    @field_validator("cnic")
+    @classmethod
+    def validate_cnic(cls, v: str) -> str:
+        if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
             raise ValueError("CNIC must be in format XXXXX-XXXXXXX-X")
         return v
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", v):
+            raise ValueError("Invalid email format")
+        return v
+
+    @field_validator("badge_number")
+    @classmethod
+    def validate_badge(cls, v: str) -> str:
+        if not re.match(r"^PK-\d{5}$", v):
+            raise ValueError("Badge number must be in format PK-XXXXX (e.g. PK-12345)")
+        return v
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v.strip() != "":
+            if not re.match(r"^\+92\s3\d{9}$", v):
+                raise ValueError("Phone number must be in format +92 3XXXXXXXXX")
+        return v
+
+
+class OfficerSignupVerify(BaseModel):
+    cnic: str = Field(..., max_length=15)
+    otp: str = Field(..., min_length=6, max_length=6)
+
+    @field_validator("cnic")
+    @classmethod
+    def validate_cnic(cls, v: str) -> str:
+        if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
+            raise ValueError("CNIC must be in format XXXXX-XXXXXXX-X")
+        return v
+
+
+class OfficerLoginRequest(BaseModel):
+    cnic: str = Field(..., max_length=15)
+    password: str = Field(...)
+    badge_number: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("cnic")
+    @classmethod
+    def validate_cnic(cls, v: str) -> str:
+        if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
+            raise ValueError("CNIC must be in format XXXXX-XXXXXXX-X")
+        return v
+
