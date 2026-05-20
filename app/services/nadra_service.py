@@ -24,7 +24,7 @@ async def init_client() -> None:
     _http_client = httpx.AsyncClient(
         base_url=settings.NADRA_API_URL,
         headers={"Content-Type": "application/json"},
-        timeout=10.0,
+        timeout=60.0,
     )
     logger.info("NADRA HTTP client initialized")
 

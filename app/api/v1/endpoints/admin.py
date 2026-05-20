@@ -1,13 +1,25 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from typing import Optional
+import random
+import json
 
-from app.api.deps import get_current_officer_user, get_current_admin_user
+from app.api.deps import get_current_officer_user, get_current_admin_user, oauth2_scheme
 from app.core.database import get_db
 from app.core.logging_config import get_logger
+from app.core.security import (
+    get_password_hash, verify_password, create_access_token, create_refresh_token, decode_token
+)
+from app.core.redis import get_redis
 from app.models.user import User, UserRole
 from app.models.fir import FIRStatus, FIRCategory, FIRPriority
-from app.schemas.user import UserResponse, AdminUserUpdate, OfficerCreate
+from app.models.police_station import PoliceStation
+from app.schemas.user import (
+    UserResponse, AdminUserUpdate, OfficerCreate, OfficerSignupRequest,
+    OfficerSignupVerify, OfficerLoginRequest, Token
+)
 from app.schemas.fir import (
     FIRResponse, FIRDetailResponse, FIRStatusUpdate, FIRAssignOfficer
 )
@@ -15,10 +27,268 @@ from app.schemas.comment import CommentCreate, CommentResponse
 from app.schemas.dashboard import DashboardStats
 from app.schemas.pagination import PaginatedResponse
 from app.services import user_service, fir_service, notification_service
-from app.services.nadra_service import verify_cnic
+from app.services.nadra_service import verify_cnic, fetch_citizen_address
+from app.services.email_service import send_otp_email
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+# ────────────────────────────────────────────────────────────────────
+# OFFICER AUTHENTICATION & REGISTRATION
+# ────────────────────────────────────────────────────────────────────
+
+@router.post("/signup/request", status_code=status.HTTP_200_OK)
+async def signup_officer_request(
+    body: OfficerSignupRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Step 1 of registration. Verifies identity with NADRA, checks uniqueness,
+    generates a 6-digit OTP, caches registration details in Redis, and sends email.
+    """
+    # 1. Verify CNIC spelling and expected name matches Mock NADRA API
+    await verify_cnic(body.cnic, expected_name=body.full_name)
+
+    # Fetch address from NADRA Mock API (best-effort)
+    nadra_address = await fetch_citizen_address(body.cnic)
+
+    # 2. Check if a user with this CNIC already exists in the system
+    existing_cnic = await user_service.get_user_by_cnic(db, body.cnic)
+    if existing_cnic:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this CNIC already exists."
+        )
+
+    # 3. Check if a user with this Email already exists in the system
+    existing_email = await user_service.get_user_by_email(db, body.email)
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this email already exists."
+        )
+
+    # 4. Validate rank against hierarchical ranks
+    valid_ranks = [
+        "Constable", "Head Constable", "ASI", "SI", "Inspector",
+        "DSP", "SP", "SSP", "DIG", "AIG", "IG"
+    ]
+    if body.rank not in valid_ranks:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid rank. Must be one of: {', '.join(valid_ranks)}"
+        )
+
+    # 5. Generate 6-digit numeric OTP
+    otp_code = str(random.randint(100000, 999999))
+    logger.info(f"Generated registration OTP for CNIC {body.cnic}: {otp_code}")
+
+    # 6. Cache OTP and registration data in Redis (10-minute TTL)
+    redis_client = get_redis()
+    if not redis_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis service unavailable. Unable to process signup."
+        )
+
+    # Save details
+    registration_payload = body.model_dump()
+    registration_payload["address"] = nadra_address
+    await redis_client.setex(f"signup_data:{body.cnic}", 600, json.dumps(registration_payload))
+    await redis_client.setex(f"signup_otp:{body.cnic}", 600, otp_code)
+
+    # 7. Send Email via Resend
+    try:
+        await send_otp_email(body.email, otp_code)
+    except Exception as e:
+        logger.error(f"Failed to send registration OTP email to {body.email}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send OTP email. Please try again."
+        )
+
+    return {"message": "OTP sent successfully", "cnic": body.cnic}
+
+
+@router.post("/signup/verify", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def signup_officer_verify(
+    body: OfficerSignupVerify,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Step 2 of registration. Validates OTP from Redis, retrieves cached registration data,
+    resolves/creates PoliceStation, creates officer with is_active=False.
+    """
+    redis_client = get_redis()
+    if not redis_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Redis service unavailable."
+        )
+
+    # 1. Retrieve cached OTP
+    stored_otp = await redis_client.get(f"signup_otp:{body.cnic}")
+    if not stored_otp or stored_otp != body.otp:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired OTP."
+        )
+
+    # 2. Retrieve cached signup payload
+    stored_payload_str = await redis_client.get(f"signup_data:{body.cnic}")
+    if not stored_payload_str:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration session expired. Please submit the registration form again."
+        )
+
+    signup_payload = json.loads(stored_payload_str)
+
+    # 3. Dynamic Police Station Resolution
+    station_name = signup_payload["station_name"].strip()
+    district = signup_payload["district"].strip()
+    city = signup_payload["city"].strip()
+
+    # Query station in database
+    result = await db.execute(select(PoliceStation).where(PoliceStation.name == station_name))
+    station = result.scalars().first()
+
+    if not station:
+        station = PoliceStation(
+            name=station_name,
+            address=f"{district}, {city}, Pakistan",
+            jurisdiction=f"{district}, {city}"
+        )
+        db.add(station)
+        await db.commit()
+        await db.refresh(station)
+        logger.info(f"Created new Police Station: {station_name}")
+
+    # 4. Hash Password & Create User
+    hashed_password = get_password_hash(signup_payload["password"])
+    
+    new_officer = User(
+        cnic=signup_payload["cnic"],
+        full_name=signup_payload["full_name"],
+        email=signup_payload["email"],
+        phone=signup_payload["phone"],
+        address=signup_payload.get("address"),
+        password_hash=hashed_password,
+        role=UserRole.officer,
+        badge_number=signup_payload["badge_number"],
+        rank=signup_payload["rank"],
+        station_id=station.id,
+        is_active=False  # Deactivated by default, pending admin review
+    )
+
+    db.add(new_officer)
+    await db.commit()
+    await db.refresh(new_officer)
+
+    # 5. Clean up Redis cache
+    await redis_client.delete(f"signup_otp:{body.cnic}")
+    await redis_client.delete(f"signup_data:{body.cnic}")
+
+    logger.info(f"Officer registered successfully: {new_officer.cnic} (Badge: {new_officer.badge_number}). Status: PENDING_APPROVAL")
+
+    return new_officer
+
+
+@router.post("/login", response_model=Token)
+async def login_officer(
+    body: OfficerLoginRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Secure officer/admin login. Checks role (must be officer or admin), 
+    checks badge validation, and checks activation status (returns HTTP 403 if pending review).
+    """
+    user = await user_service.get_user_by_cnic(db, body.cnic)
+
+    # 1. Verify user exists and password is correct
+    if not user or not verify_password(body.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect CNIC or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 2. Verify role is authorized (officer or admin only)
+    if user.role not in [UserRole.admin, UserRole.officer]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Only officers and admins can access the admin portal."
+        )
+
+    # 3. If badge number is entered, verify it
+    if body.badge_number and user.badge_number != body.badge_number:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Badge number does not match registered details."
+        )
+
+    # 4. Check activation status (Inactive accounts are pending review)
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is pending administrative verification. You will be notified via email once approved."
+        )
+
+    # 5. Update last login
+    await user_service.update_last_login(db, user)
+
+    # 6. Issue tokens
+    access_token = create_access_token(data={"sub": user.cnic})
+    refresh_token = create_refresh_token(data={"sub": user.cnic})
+
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+
+
+@router.post("/logout")
+async def logout(token: str = Depends(oauth2_scheme)):
+    """Log out by blacklisting the current JWT in Redis."""
+    payload = decode_token(token)
+    if payload:
+        exp = payload.get("exp", 0)
+        now = datetime.now(timezone.utc).timestamp()
+        ttl = int(exp - now)
+        if ttl > 0:
+            redis_client = get_redis()
+            if redis_client:
+                await redis_client.setex(f"blacklist:{token}", ttl, "revoked")
+    return {"message": "Successfully logged out"}
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_officer_profile(
+    current_officer: User = Depends(get_current_officer_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieve current logged-in officer profile details.
+    """
+    station_name = None
+    city = None
+    district = None
+
+    if current_officer.station_id:
+        result = await db.execute(select(PoliceStation).where(PoliceStation.id == current_officer.station_id))
+        station = result.scalars().first()
+        if station:
+            station_name = station.name
+            if station.jurisdiction and "," in station.jurisdiction:
+                parts = [p.strip() for p in station.jurisdiction.split(",")]
+                if len(parts) >= 2:
+                    district = parts[0]
+                    city = parts[1]
+
+    response_data = UserResponse.model_validate(current_officer)
+    response_data.station_name = station_name
+    response_data.city = city
+    response_data.district = district
+    return response_data
+
 
 
 # ────────────────────────────────────────────────────────────────────

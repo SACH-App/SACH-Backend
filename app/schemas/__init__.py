@@ -5,7 +5,8 @@ Contains data validation, serialization, and deserialization models.
 from app.schemas.user import (
     UserCreate, UserResponse, UserUpdate, AdminUserUpdate,
     OfficerCreate, ChangePassword, PasswordResetRequest, PasswordReset,
-    Token, TokenData, RefreshTokenRequest
+    Token, TokenData, RefreshTokenRequest, OfficerSignupRequest,
+    OfficerSignupVerify, OfficerLoginRequest
 )
 from app.schemas.fir import (
     FIRCreate, FIRResponse, FIRDetailResponse,
