@@ -18,14 +18,16 @@ from app.models.fir import FIRStatus, FIRCategory, FIRPriority
 from app.models.police_station import PoliceStation
 from app.schemas.user import (
     UserResponse, AdminUserUpdate, OfficerCreate, OfficerSignupRequest,
-    OfficerSignupVerify, OfficerLoginRequest, Token
+    OfficerSignupVerify, OfficerLoginRequest, Token, UserUpdate
 )
 from app.schemas.fir import (
-    FIRResponse, FIRDetailResponse, FIRStatusUpdate, FIRAssignOfficer
+    FIRResponse, FIRDetailResponse, FIRStatusUpdate, FIRAssignOfficer, OfficerFIRCreate
 )
 from app.schemas.comment import CommentCreate, CommentResponse
 from app.schemas.dashboard import DashboardStats
 from app.schemas.pagination import PaginatedResponse
+from app.schemas.alert import AlertCreate, AlertResponse
+from app.models.alert import Alert
 from app.services import user_service, fir_service, notification_service
 from app.services.nadra_service import verify_cnic, fetch_citizen_address
 from app.services.email_service import send_otp_email
@@ -290,6 +292,63 @@ async def get_current_officer_profile(
     return response_data
 
 
+@router.put("/me", response_model=UserResponse)
+async def update_current_officer_profile(
+    body: UserUpdate,
+    current_officer: User = Depends(get_current_officer_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Update current logged-in officer profile details.
+    """
+    if body.full_name is not None:
+        current_officer.full_name = body.full_name
+    if body.phone is not None:
+        current_officer.phone = body.phone
+    if body.email is not None:
+        current_officer.email = body.email
+    if body.address is not None:
+        current_officer.address = body.address
+
+    db.add(current_officer)
+    await db.commit()
+    await db.refresh(current_officer)
+
+    # We fetch station info to populate the response properly just like in GET /me
+    station_name = None
+    city = None
+    district = None
+
+    if current_officer.station_id:
+        result = await db.execute(select(PoliceStation).where(PoliceStation.id == current_officer.station_id))
+        station = result.scalars().first()
+        if station:
+            station_name = station.name
+            if station.jurisdiction and "," in station.jurisdiction:
+                parts = [p.strip() for p in station.jurisdiction.split(",")]
+                if len(parts) >= 2:
+                    district = parts[0]
+                    city = parts[1]
+
+    response_data = UserResponse.model_validate(current_officer)
+    response_data.station_name = station_name
+    response_data.city = city
+    response_data.district = district
+    
+    # Auto Audit: Log this action as an Alert for the Audit Log
+    from app.models.alert import Alert
+    auto_alert = Alert(
+        officer_id=current_officer.id,
+        title=f"Profile Updated: {current_officer.full_name}",
+        message=f"Officer updated their profile information.",
+        target_audience="Specific User",
+        alert_type="Update"
+    )
+    db.add(auto_alert)
+    await db.commit()
+
+    return response_data
+
 
 # ────────────────────────────────────────────────────────────────────
 # DASHBOARD
@@ -309,6 +368,61 @@ async def get_dashboard(
 # ────────────────────────────────────────────────────────────────────
 # FIR MANAGEMENT
 # ────────────────────────────────────────────────────────────────────
+
+@router.post("/firs", response_model=FIRResponse, status_code=status.HTTP_201_CREATED)
+async def file_fir_on_behalf(
+    body: OfficerFIRCreate,
+    db: AsyncSession = Depends(get_db),
+    current_officer: User = Depends(get_current_officer_user)
+):
+    """
+    Officer files a FIR on behalf of a citizen.
+    Looks up citizen by CNIC; if not found, creates a new citizen account
+    with a temporary password equal to their CNIC digits (no dashes).
+    Email is required so the citizen can later access their account.
+    """
+    from app.models.user import UserRole as UR
+
+    # 1. Find or create the citizen by CNIC
+    citizen = await user_service.get_user_by_cnic(db, body.citizen_cnic)
+    if not citizen:
+        # New citizen — create account with temp password = CNIC without dashes
+        temp_password = body.citizen_cnic.replace("-", "")
+        citizen = await user_service.create_citizen(
+            db,
+            cnic=body.citizen_cnic,
+            full_name=body.citizen_name,
+            phone=body.citizen_phone,
+            email=body.citizen_email,
+            password=temp_password,
+        )
+        logger.info(f"Auto-created citizen account for CNIC {body.citizen_cnic}")
+    else:
+        # Existing user — ensure they are a citizen (not an officer/admin CNIC)
+        if citizen.role not in (UR.citizen,):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"CNIC {body.citizen_cnic} belongs to a {citizen.role.value} account, not a citizen."
+            )
+        # If citizen has no email on record, update it with the provided one
+        if not citizen.email and body.citizen_email:
+            await user_service.update_user_profile(db, citizen, email=body.citizen_email)
+
+    # 2. Create the FIR linked to the citizen
+    fir = await fir_service.create_fir(
+        db,
+        citizen_id=citizen.id,
+        title=body.title,
+        description=body.description,
+        incident_date=body.incident_date,
+        incident_location=body.incident_location,
+        category=body.category,
+        priority=body.priority,
+        latitude=body.latitude,
+        longitude=body.longitude,
+    )
+    return fir
+
 
 @router.get("/firs", response_model=PaginatedResponse[FIRResponse])
 async def get_all_firs(
@@ -367,6 +481,18 @@ async def update_fir_status(
         db, fir.citizen_id, fir.id, fir.tracking_number, body.status.value
     )
 
+    # Auto Audit: Log this action as an Alert for the Audit Log
+    from app.models.alert import Alert
+    auto_alert = Alert(
+        officer_id=current_officer.id,
+        title=f"FIR Status Updated: {fir.tracking_number}",
+        message=f"Status changed to {body.status.value}" + (f" - Notes: {body.officer_notes}" if body.officer_notes else ""),
+        target_audience="Specific User",
+        alert_type="Update"
+    )
+    db.add(auto_alert)
+    await db.commit()
+
     return updated_fir
 
 
@@ -375,17 +501,43 @@ async def assign_fir_officer(
     fir_id: int,
     body: FIRAssignOfficer,
     db: AsyncSession = Depends(get_db),
-    current_admin: User = Depends(get_current_admin_user)
+    current_admin: User = Depends(get_current_officer_user)  # Any officer can try to assign, but rank logic restricts it
 ):
-    """Assign an officer to a FIR (admin only)."""
+    """Assign an officer to a FIR (Requires rank ASI or above, and can only assign lower ranking officers)."""
     fir = await fir_service.get_fir_by_id(db, fir_id)
     if not fir:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FIR not found")
 
-    # Verify the officer exists and is actually an officer
+    # Verify the officer to be assigned exists
     officer = await user_service.get_user_by_id(db, body.officer_id)
     if not officer or officer.role not in [UserRole.officer, UserRole.admin]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid officer ID")
+
+    # Rank Hierarchy Logic
+    RANK_HIERARCHY = {
+        "IG": 10, "IGP": 10, "DIG": 9, "SSP": 8, "SP": 7, "ASP": 6, "DSP": 6,
+        "Inspector": 5, "Sub-Inspector": 4, "SI": 4, 
+        "Assistant Sub-Inspector": 3, "ASI": 3,
+        "Head Constable": 2, "Constable": 1
+    }
+
+    def get_rank_val(rank_str: str) -> int:
+        if not rank_str:
+            return 0
+        for k, v in RANK_HIERARCHY.items():
+            if k.lower() in rank_str.lower():
+                return v
+        return 0
+
+    current_val = get_rank_val(current_admin.rank)
+    target_val = get_rank_val(officer.rank)
+
+    # Admin bypasses rank check
+    if current_admin.role != UserRole.admin:
+        if current_val < 3: # Less than ASI
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Must be rank ASI or above to assign cases.")
+        if target_val >= current_val:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only assign cases to lower ranking officers.")
 
     updated_fir = await fir_service.assign_fir_officer(db, fir, body.officer_id)
 
@@ -393,6 +545,18 @@ async def assign_fir_officer(
     await notification_service.notify_fir_assigned(
         db, body.officer_id, fir.id, fir.tracking_number
     )
+
+    # Auto Audit: Log this action as an Alert for the Audit Log
+    from app.models.alert import Alert
+    auto_alert = Alert(
+        officer_id=current_admin.id,
+        title=f"Officer Assigned: {fir.tracking_number}",
+        message=f"Officer {officer.full_name} (ID: {body.officer_id}) was assigned to this FIR.",
+        target_audience="Specific User",
+        alert_type="Update"
+    )
+    db.add(auto_alert)
+    await db.commit()
 
     return updated_fir
 
@@ -415,6 +579,18 @@ async def add_fir_comment(
     await notification_service.notify_fir_comment(
         db, fir.citizen_id, fir.id, fir.tracking_number, current_officer.full_name
     )
+
+    # Auto Audit: Log this action as an Alert for the Audit Log
+    from app.models.alert import Alert
+    auto_alert = Alert(
+        officer_id=current_officer.id,
+        title=f"Investigation Note Added: {fir.tracking_number}",
+        message=f"{current_officer.full_name} added an investigation note.",
+        target_audience="Specific User",
+        alert_type="Update"
+    )
+    db.add(auto_alert)
+    await db.commit()
 
     response = CommentResponse.model_validate(comment)
     response.author_name = current_officer.full_name
@@ -534,9 +710,9 @@ async def get_officers(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    current_admin: User = Depends(get_current_admin_user)
+    current_admin: User = Depends(get_current_officer_user)
 ):
-    """List all officers (admin only)."""
+    """List all officers."""
     offset = (page - 1) * page_size
     officers, total = await user_service.get_users_paginated(db, offset, page_size, role=UserRole.officer)
     return PaginatedResponse.create(officers, total, page, page_size)
@@ -559,3 +735,143 @@ async def get_analytics(
         "fir_stats": fir_stats,
         "user_counts": user_counts,
     }
+
+
+# ────────────────────────────────────────────────────────────────────
+# ALERTS & BROADCASTS
+# ────────────────────────────────────────────────────────────────────
+
+@router.post("/alerts", response_model=AlertResponse, status_code=status.HTTP_201_CREATED)
+async def send_broadcast_alert(
+    body: AlertCreate,
+    db: AsyncSession = Depends(get_db),
+    current_officer: User = Depends(get_current_officer_user)
+):
+    """Send alert to targeted audiences."""
+    district = None
+    city = None
+    if current_officer.station_id:
+        result = await db.execute(select(PoliceStation).where(PoliceStation.id == current_officer.station_id))
+        station = result.scalars().first()
+        if station and station.jurisdiction and "," in station.jurisdiction:
+            parts = [p.strip() for p in station.jurisdiction.split(",")]
+            if len(parts) >= 2:
+                district = parts[0]
+                city = parts[1]
+
+    user_ids = []
+
+    if body.target_audience == 'All Officers':
+        query = select(User.id).where(User.role == UserRole.officer)
+        result = await db.execute(query)
+        user_ids = result.scalars().all()
+
+    elif body.target_audience == 'District Officers':
+        if not district:
+            raise HTTPException(status_code=400, detail="Officer has no assigned district jurisdiction")
+        query = select(User.id).join(PoliceStation, User.station_id == PoliceStation.id).where(
+            User.role == UserRole.officer,
+            PoliceStation.jurisdiction.ilike(f"%{district}%")
+        )
+        result = await db.execute(query)
+        user_ids = result.scalars().all()
+
+    elif body.target_audience == 'Citizens – City-wide':
+        if not city:
+            raise HTTPException(status_code=400, detail="Officer has no assigned city jurisdiction")
+        query = select(User).where(User.role == UserRole.citizen)
+        result = await db.execute(query)
+        citizens = result.scalars().all()
+        for c in citizens:
+            if c.address:
+                parts = [p.strip() for p in c.address.split(",")]
+                if len(parts) >= 3:
+                    # Based on the format: ..., City, Province, PostalCode
+                    user_city = parts[-3]
+                    if user_city.lower() == city.lower():
+                        user_ids.append(c.id)
+
+    elif body.target_audience == 'All Users':
+        query = select(User.id)
+        result = await db.execute(query)
+        user_ids = result.scalars().all()
+        
+    elif body.target_audience == 'Specific User':
+        if not body.cnic:
+            raise HTTPException(status_code=400, detail="CNIC is required for Specific User")
+        query = select(User.id).where(User.cnic == body.cnic)
+        result = await db.execute(query)
+        user_id = result.scalar_one_or_none()
+        if user_id:
+            user_ids.append(user_id)
+        else:
+            raise HTTPException(status_code=404, detail="User with provided CNIC not found")
+
+    else:
+        raise HTTPException(status_code=400, detail="Invalid target audience")
+
+    # Create the alert record
+    new_alert = Alert(
+        officer_id=current_officer.id,
+        title=body.subject,
+        message=body.message,
+        target_audience=body.target_audience,
+        alert_type=body.type
+    )
+    db.add(new_alert)
+    await db.flush()
+
+    if user_ids:
+        from app.models.notification import Notification, NotificationType
+        notifications = []
+        for uid in user_ids:
+            notifications.append(
+                Notification(
+                    user_id=uid,
+                    title=body.subject,
+                    message=body.message,
+                    notification_type=NotificationType.general,
+                    reference_id=new_alert.id
+                )
+            )
+        db.add_all(notifications)
+
+    await db.commit()
+    await db.refresh(new_alert)
+    return new_alert
+
+
+@router.get("/alerts", response_model=PaginatedResponse[AlertResponse])
+async def get_recent_alerts(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_officer: User = Depends(get_current_officer_user)
+):
+    """Get history of alerts sent."""
+    from sqlalchemy.orm import joinedload
+    from sqlalchemy import func
+
+    count_query = select(func.count(Alert.id))
+    total_result = await db.execute(count_query)
+    total = total_result.scalar()
+
+    offset = (page - 1) * page_size
+    query = select(Alert).options(joinedload(Alert.officer)).order_by(Alert.created_at.desc()).offset(offset).limit(page_size)
+    result = await db.execute(query)
+    alerts = result.scalars().all()
+
+    response_list = []
+    for alert in alerts:
+        response_list.append(AlertResponse(
+            id=alert.id,
+            officer_id=alert.officer_id,
+            officer_name=alert.officer.full_name if alert.officer else "Unknown",
+            title=alert.title,
+            message=alert.message,
+            target_audience=alert.target_audience,
+            alert_type=alert.alert_type,
+            created_at=alert.created_at
+        ))
+
+    return PaginatedResponse.create(response_list, total, page, page_size)

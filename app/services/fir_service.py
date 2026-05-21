@@ -158,6 +158,15 @@ async def get_all_firs_paginated(db: AsyncSession, offset: int, limit: int,
     query = query.order_by(FIR.created_at.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     firs = result.scalars().all()
+    
+    # Manually populate officer_name for serialization
+    officer_ids = {fir.assigned_officer_id for fir in firs if fir.assigned_officer_id}
+    if officer_ids:
+        from app.models.user import User
+        user_res = await db.execute(select(User).where(User.id.in_(officer_ids)))
+        user_dict = {u.id: u.full_name for u in user_res.scalars().all()}
+        for fir in firs:
+            setattr(fir, 'officer_name', user_dict.get(fir.assigned_officer_id))
 
     return firs, total
 

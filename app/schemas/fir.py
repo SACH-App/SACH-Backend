@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, field_validator
 from typing import Optional, List
 from datetime import datetime
 from app.models.fir import FIRStatus, FIRCategory, FIRPriority
+import re
 
 
 class FIRBase(BaseModel):
@@ -18,16 +19,49 @@ class FIRCreate(FIRBase):
     longitude: Optional[float] = None
 
 
+class OfficerFIRCreate(FIRBase):
+    """Officer files a FIR on behalf of a citizen."""
+    # Citizen identity
+    citizen_cnic: str = Field(..., max_length=15, description="Citizen's CNIC: XXXXX-XXXXXXX-X")
+    citizen_name: str = Field(..., max_length=100)
+    citizen_phone: Optional[str] = Field(None, max_length=20)
+    citizen_email: str = Field(..., max_length=255, description="Citizen's email address (required)")
+    citizen_gender: Optional[str] = Field(None, max_length=10)
+    citizen_dob: Optional[str] = Field(None, max_length=20)  # ISO date string
+    # Incident info
+    incident_date: Optional[datetime] = None
+    incident_location: Optional[str] = Field(None, max_length=500)
+    category: FIRCategory = FIRCategory.other
+    priority: FIRPriority = FIRPriority.medium
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+    @field_validator("citizen_email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", v):
+            raise ValueError("citizen_email must be a valid email address")
+        return v.lower().strip()
+
+    @field_validator("citizen_cnic")
+    @classmethod
+    def validate_cnic(cls, v: str) -> str:
+        if not re.match(r"^\d{5}-\d{7}-\d{1}$", v):
+            raise ValueError("citizen_cnic must be in format XXXXX-XXXXXXX-X")
+        return v
+
+
 class FIRResponse(FIRBase):
     id: int
     tracking_number: str
     citizen_id: int
-    status: FIRStatus
+    status: str
     category: FIRCategory
     priority: FIRPriority
     incident_date: Optional[datetime] = None
     incident_location: Optional[str] = None
     assigned_officer_id: Optional[int] = None
+    officer_name: Optional[str] = None
     officer_notes: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -36,6 +70,12 @@ class FIRResponse(FIRBase):
 
     class Config:
         from_attributes = True
+
+    @model_validator(mode="after")
+    def resolve_status(self) -> 'FIRResponse':
+        if self.assigned_officer_id is not None and str(self.status).lower().strip() in ("pending", "filed"):
+            self.status = "under_review"
+        return self
 
 
 class FIRDetailResponse(FIRResponse):
