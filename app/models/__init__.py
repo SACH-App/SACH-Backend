@@ -10,3 +10,4 @@ from app.models.fir_comment import FIRComment
 from app.models.evidence import Evidence
 from app.models.notification import Notification
 from app.models.fcm_token import FCMToken
+from app.models.alert import Alert
